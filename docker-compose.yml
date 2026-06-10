@@ -1,0 +1,104 @@
+networks:
+  # cluster: inter-node communication (heartbeats, 2PC, resync).
+  # Disconnect a node from this network to simulate a minority partition.
+  cluster:
+    name: bank-ledger_cluster
+
+  # Per-node external networks — host reaches each node via its own bridge.
+  # Nodes are NOT on each other's external network, so disconnecting a node
+  # from `cluster` fully severs peer communication while keeping host→node
+  # port publishing intact (Docker uses the external-nodeX IP for DNAT).
+  external-node1:
+    name: bank-ledger_ext1
+  external-node2:
+    name: bank-ledger_ext2
+  external-node3:
+    name: bank-ledger_ext3
+
+services:
+
+  # ── Postgres instances ───────────────────────────────────────────────────────
+
+  postgres1:
+    image: postgres:16-alpine
+    environment: &pg-env
+      POSTGRES_USER: ledger
+      POSTGRES_PASSWORD: ledger
+      POSTGRES_DB: ledger
+    networks: [cluster]
+    healthcheck: &pg-health
+      test: ["CMD-SHELL", "pg_isready -U ledger"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  postgres2:
+    image: postgres:16-alpine
+    environment: *pg-env
+    networks: [cluster]
+    healthcheck: *pg-health
+
+  postgres3:
+    image: postgres:16-alpine
+    environment: *pg-env
+    networks: [cluster]
+    healthcheck: *pg-health
+
+  # ── Ledger nodes ─────────────────────────────────────────────────────────────
+  # Each node lists its external-nodeX network FIRST so Docker uses that IP
+  # for the port-publishing DNAT rule.  The cluster network is second; it
+  # provides peer DNS resolution (node1/node2/node3 aliases).
+
+  node1:
+    build: .
+    cap_add: [NET_ADMIN]
+    environment:
+      NODE_ID: node1
+      NODE_ADDR: ":8080"
+      DATABASE_URL: "postgres://ledger:ledger@postgres1:5432/ledger?sslmode=disable"
+      PEER_ADDRS: "http://node2:8080,http://node3:8080"
+    ports:
+      - "8081:8080"
+    networks:
+      external-node1: {}
+      cluster:
+        aliases: [node1]
+    depends_on:
+      postgres1:
+        condition: service_healthy
+
+  node2:
+    build: .
+    cap_add: [NET_ADMIN]
+    environment:
+      NODE_ID: node2
+      NODE_ADDR: ":8080"
+      DATABASE_URL: "postgres://ledger:ledger@postgres2:5432/ledger?sslmode=disable"
+      PEER_ADDRS: "http://node1:8080,http://node3:8080"
+    ports:
+      - "8082:8080"
+    networks:
+      external-node2: {}
+      cluster:
+        aliases: [node2]
+    depends_on:
+      postgres2:
+        condition: service_healthy
+
+  node3:
+    build: .
+    cap_add: [NET_ADMIN]
+    environment:
+      NODE_ID: node3
+      NODE_ADDR: ":8080"
+      DATABASE_URL: "postgres://ledger:ledger@postgres3:5432/ledger?sslmode=disable"
+      PEER_ADDRS: "http://node1:8080,http://node2:8080"
+    ports:
+      - "8083:8080"
+    networks:
+      external-node3: {}
+      cluster:
+        aliases: [node3]
+    depends_on:
+      postgres3:
+        condition: service_healthy
